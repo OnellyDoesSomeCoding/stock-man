@@ -11,7 +11,8 @@ export const LEVEL_COLOR = '#9ca3af' // dashed reference lines, readable in ligh
 export const BASE_OPTIONS = {
   autoSize: true, // follow the container's size
   // Keep the same dates in view when the window is resized (instead of leaving a gap).
-  timeScale: { timeVisible: false, lockVisibleTimeRangeOnResize: true },
+  // minBarSpacing: let 5 years of days squeeze onto a phone screen instead of cutting off the start.
+  timeScale: { timeVisible: false, lockVisibleTimeRangeOnResize: true, minBarSpacing: 0.05 },
   crosshair: { mode: 0 }, // free-moving crosshair
 }
 

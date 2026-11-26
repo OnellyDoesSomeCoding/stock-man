@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchPrices, fetchStats } from './api'
 import ComparePanel from './components/ComparePanel'
 import InfoTip from './components/InfoTip'
+import LabCard from './components/LabCard'
+import PortfolioCard from './components/PortfolioCard'
+import TradeBox from './components/TradeBox'
 import PriceChart, { DOWN, UP } from './components/PriceChart'
 import StatsCard from './components/StatsCard'
 import TickerSearch from './components/TickerSearch'
@@ -9,6 +12,7 @@ import Watchlist from './components/Watchlist'
 import { compact, price } from './format'
 import { MA_DEFAULT_ON, MA_LINES, RSI, rsiZone } from './indicators'
 import useFetch from './useFetch'
+import usePortfolio from './usePortfolio'
 import useWatchlist from './useWatchlist'
 
 const RANGES = ['1m', '3m', '6m', '1y', '5y']
@@ -124,6 +128,7 @@ export default function App() {
   const [compareTicker, setCompareTicker] = useState(null) // second stock, or null = normal chart
   const theme = useColorScheme()
   const watchlist = useWatchlist()
+  const portfolio = usePortfolio()
 
   const prices = useFetch(`${ticker}|${range}`, (signal) => fetchPrices(ticker, range, INDICATORS, signal))
   const stats = useFetch(ticker, (signal) => fetchStats(ticker, signal))
@@ -197,7 +202,9 @@ export default function App() {
                   watched={watched}
                   watchBusy={watchlist.pending.includes(currentTicker) || watchlist.items === null}
                   onToggleWatch={toggleWatch}
-                />
+                >
+                  <TradeBox key={stats.data.ticker} stats={stats.data} portfolio={portfolio} />
+                </StatsCard>
               ) : (
                 <section className="card stats">
                   <p className={stats.error ? 'message error' : 'message'}>
@@ -281,6 +288,10 @@ export default function App() {
               </section>
             </>
           )}
+
+          {currentTicker && !bothFailed && <LabCard ticker={currentTicker} theme={theme} />}
+
+          <PortfolioCard portfolio={portfolio} onSelect={setTicker} />
         </div>
 
         <aside className="side-col">

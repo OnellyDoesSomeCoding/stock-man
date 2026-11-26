@@ -5,19 +5,24 @@ import { applyTheme, BASE_OPTIONS, LEVEL_COLOR } from '../chartTheme'
 const percent = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`
 
 /**
- * Line chart of % change for several stocks on one shared scale.
- * series: [{ id, color, points: [{ time, value }] }]   (value = % change, 0 = first day)
+ * Several lines on one shared scale (comparisons, backtest results, predictions).
+ * series:   [{ id, color, points: [{ time, value }], dashed? }]
+ * format:   how axis labels look (default: +1.2%)
+ * baseline: value for a dashed reference line (e.g. 0% or the starting cash), or null for none
  * onHover(time | null) fires as the mouse moves; null = mouse left the chart.
  */
-export default function CompareChart({ series, theme, onHover }) {
+export default function LineChart({ series, theme, onHover, format = percent, baseline = 0 }) {
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef(new Map()) // id -> chart series
   const onHoverRef = useRef(onHover)
+  const formatRef = useRef(format)
+  const baselineRef = useRef(baseline)
 
   useEffect(() => {
     onHoverRef.current = onHover
-  }, [onHover])
+    formatRef.current = format
+  }, [onHover, format])
 
   useEffect(() => {
     const chart = createChart(containerRef.current, BASE_OPTIONS)
@@ -45,15 +50,19 @@ export default function CompareChart({ series, theme, onHover }) {
           lineWidth: 2,
           priceLineVisible: false,
           crosshairMarkerVisible: false,
-          priceFormat: { type: 'custom', formatter: percent, minMove: 0.1 },
+          priceFormat: { type: 'custom', formatter: (v) => formatRef.current(v), minMove: 0.01 },
         })
-        if (existing.size === 0) {
-          // Dashed line at 0% = "same price as on the first day".
-          line.createPriceLine({ price: 0, color: LEVEL_COLOR, lineWidth: 1, lineStyle: LineStyle.Dashed })
+        if (existing.size === 0 && baselineRef.current != null) {
+          line.createPriceLine({
+            price: baselineRef.current,
+            color: LEVEL_COLOR,
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+          })
         }
         existing.set(s.id, line)
       }
-      line.applyOptions({ color: s.color })
+      line.applyOptions({ color: s.color, lineStyle: s.dashed ? LineStyle.Dashed : LineStyle.Solid })
       line.setData(s.points)
     }
     for (const [id, line] of existing) {

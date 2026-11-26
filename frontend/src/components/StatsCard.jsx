@@ -30,7 +30,7 @@ function WatchButton({ watched, busy, onClick }) {
 }
 
 /** Headline numbers for one stock: price, today's change, market cap, P/E. */
-export default function StatsCard({ stats, loading, watched, watchBusy, onToggleWatch }) {
+export default function StatsCard({ stats, loading, watched, watchBusy, onToggleWatch, children }) {
   const color = stats.change == null ? undefined : stats.change >= 0 ? UP : DOWN
   const currency = stats.currency ?? 'THB'
 
@@ -69,6 +69,8 @@ export default function StatsCard({ stats, loading, watched, watchBusy, onToggle
         <Tile term="pe" value={price(stats.pe_ratio)} extra={stats.pe_ratio == null ? GLOSSARY.pe.missing : null} />
         <Tile term="previousClose" value={`${price(stats.previous_close)} ${currency}`} />
       </dl>
+
+      {children /* e.g. the paper-trade box */}
     </section>
   )
 }

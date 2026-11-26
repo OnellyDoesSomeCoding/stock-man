@@ -5,13 +5,17 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
-from . import cache, yahoo
+from . import backtest, cache, forecast, yahoo
+from .indicators import relative_strength_index, simple_moving_average
 
 PRICE_TTL = timedelta(minutes=30)  # how long cached data counts as "fresh"
 STATS_TTL = timedelta(minutes=30)
 SEARCH_TTL = timedelta(days=1)  # company names rarely change
 SEARCH_LIMIT = 10
 WATCHLIST_MAX = 30
+STARTING_CASH = 100_000.0  # fake THB every paper portfolio starts with
+MAX_SHARES_PER_TRADE = 10_000_000
+RECENT_TRADES = 20
 RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "5y": 1827}
 SMA_MIN, SMA_MAX, SMA_MAX_COUNT = 2, 250, 3
 
@@ -51,50 +55,16 @@ def parse_sma_periods(raw: str | None) -> list[int]:
     return periods
 
 
-def simple_moving_average(candles: list[dict], period: int) -> list[dict]:
-    """Average close of the last `period` days, for every day that has enough history."""
-    points, total = [], 0.0
-    for i, candle in enumerate(candles):
-        total += candle["close"]
-        if i >= period:
-            total -= candles[i - period]["close"]  # drop the day that left the window
-        if i >= period - 1:
-            points.append({"time": candle["time"], "value": round(total / period, 2)})
-    return points
+def range_start(range_key: str) -> str:
+    """'1y' -> the date one year ago, as YYYY-MM-DD."""
+    return (date.today() - timedelta(days=RANGE_DAYS[range_key])).isoformat()
 
 
-def relative_strength_index(candles: list[dict], period: int = 14) -> list[dict]:
+def load_history(ticker: str) -> tuple[list[dict], datetime, bool]:
     """
-    RSI (Wilder's method), 0-100: compares the size of recent up-days with recent down-days.
-    1. Average gain and average loss over the first `period` day-to-day changes.
-    2. After that, each day nudges both averages: new = (old * (period - 1) + today) / period.
-    3. RSI = 100 - 100 / (1 + avg_gain / avg_loss).
+    All cached daily candles for a ticker (up to 5 years), refreshed from Yahoo when stale.
+    Returns (candles oldest-first, when they were fetched, stale?).
     """
-    if len(candles) <= period:
-        return []
-
-    def rsi(avg_gain: float, avg_loss: float) -> float:
-        if avg_loss == 0:
-            return 100.0 if avg_gain > 0 else 50.0  # only up-days -> 100; flat -> neutral
-        return round(100 - 100 / (1 + avg_gain / avg_loss), 2)
-
-    changes = [candles[i]["close"] - candles[i - 1]["close"] for i in range(1, len(candles))]
-    avg_gain = sum(max(c, 0) for c in changes[:period]) / period
-    avg_loss = sum(max(-c, 0) for c in changes[:period]) / period
-    points = [{"time": candles[period]["time"], "value": rsi(avg_gain, avg_loss)}]
-
-    for i in range(period, len(changes)):
-        change = changes[i]
-        avg_gain = (avg_gain * (period - 1) + max(change, 0)) / period
-        avg_loss = (avg_loss * (period - 1) + max(-change, 0)) / period
-        points.append({"time": candles[i + 1]["time"], "value": rsi(avg_gain, avg_loss)})
-    return points
-
-
-def get_candles(
-    ticker: str, range_key: str, sma_raw: str | None = None, rsi_period: int | None = None
-) -> dict:
-    sma_periods = parse_sma_periods(sma_raw)
     fetched_at, _ = cache.last_fetched(ticker, "prices")
     stale = False
 
@@ -113,10 +83,18 @@ def get_candles(
             cache.upsert_prices(ticker, candles)
             fetched_at = cache.mark_fetched(ticker, "prices")
 
+    return cache.get_prices(ticker, since="0000-00-00"), fetched_at, stale
+
+
+def get_candles(
+    ticker: str, range_key: str, sma_raw: str | None = None, rsi_period: int | None = None
+) -> dict:
+    sma_periods = parse_sma_periods(sma_raw)
+    history, fetched_at, stale = load_history(ticker)
+
     # Indicators use ALL cached history (up to 5 years), so a 200-day line is complete
     # even on a 1-month chart (and RSI has plenty of warm-up). Then everything is cut to the range.
-    since = (date.today() - timedelta(days=RANGE_DAYS[range_key])).isoformat()
-    history = cache.get_prices(ticker, since="0000-00-00")
+    since = range_start(range_key)
 
     def in_range(points: list[dict]) -> list[dict]:
         return [p for p in points if p["time"] >= since]
@@ -130,6 +108,18 @@ def get_candles(
         "sma": {str(p): in_range(simple_moving_average(history, p)) for p in sma_periods},
         "rsi": in_range(relative_strength_index(history, rsi_period)) if rsi_period else [],
     }
+
+
+def get_backtest(ticker: str, strategy: str, range_key: str) -> dict:
+    history, _, stale = load_history(ticker)
+    return {"ticker": ticker, "range": range_key, "stale": stale,
+            **backtest.run_backtest(history, strategy, range_start(range_key))}
+
+
+def get_forecast(ticker: str, horizon: int, range_key: str) -> dict:
+    history, _, stale = load_history(ticker)
+    return {"ticker": ticker, "range": range_key, "stale": stale,
+            **forecast.run_forecast(history, horizon, range_start(range_key))}
 
 
 def _rank(query: str, results: list[dict]) -> list[dict]:
@@ -209,3 +199,113 @@ def add_to_watchlist(ticker: str) -> dict:
 
 def remove_from_watchlist(ticker: str) -> None:
     cache.remove_from_watchlist(ticker)
+
+
+# ---------- Paper portfolio (fake money) ----------
+
+
+def _replay(trades: list[dict]) -> tuple[float, float, dict[str, dict]]:
+    """
+    Rebuild the portfolio from its trade history.
+    Returns (cash, realized profit, holdings) where holdings = {ticker: {shares, cost}}.
+    'cost' is what the shares still held cost in total, so average cost = cost / shares.
+    Selling uses the average cost: profit = (sell price - average cost) x shares sold.
+    """
+    cash, realized = STARTING_CASH, 0.0
+    holdings: dict[str, dict] = {}
+    for t in trades:
+        h = holdings.setdefault(t["ticker"], {"shares": 0, "cost": 0.0})
+        amount = t["shares"] * t["price"]
+        if t["side"] == "buy":
+            cash -= amount
+            h["shares"] += t["shares"]
+            h["cost"] += amount
+        else:
+            avg_cost = h["cost"] / h["shares"]
+            cash += amount
+            realized += (t["price"] - avg_cost) * t["shares"]
+            h["cost"] -= avg_cost * t["shares"]
+            h["shares"] -= t["shares"]
+            if h["shares"] == 0:
+                del holdings[t["ticker"]]
+    return cash, realized, holdings
+
+
+def _pct(part: float | None, whole: float) -> float | None:
+    return round(part / whole * 100, 2) if part is not None and whole else None
+
+
+def get_portfolio() -> dict:
+    trades = cache.list_trades()
+    cash, realized, holdings = _replay(trades)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:  # current prices, in parallel
+        stats = dict(zip(holdings, pool.map(_watch_item, holdings)))
+
+    positions, holdings_value = [], 0.0
+    for ticker, h in holdings.items():
+        s = stats[ticker]
+        price = s.get("price")
+        avg_cost = h["cost"] / h["shares"]
+        value = price * h["shares"] if price is not None else None
+        unrealized = value - h["cost"] if value is not None else None
+        holdings_value += value if value is not None else h["cost"]  # no price: count it at cost
+        positions.append({
+            "ticker": ticker,
+            "name": s.get("name"),
+            "shares": h["shares"],
+            "avg_cost": round(avg_cost, 2),
+            "cost": round(h["cost"], 2),
+            "price": price,
+            "market_value": round(value, 2) if value is not None else None,
+            "unrealized_pl": round(unrealized, 2) if unrealized is not None else None,
+            "unrealized_pl_pct": _pct(unrealized, h["cost"]),
+        })
+    positions.sort(key=lambda p: -(p["market_value"] or p["cost"]))  # biggest first
+
+    total = cash + holdings_value
+    return {
+        "starting_cash": STARTING_CASH,
+        "cash": round(cash, 2),
+        "holdings_value": round(holdings_value, 2),
+        "total_value": round(total, 2),
+        "total_pl": round(total - STARTING_CASH, 2),
+        "total_pl_pct": _pct(total - STARTING_CASH, STARTING_CASH),
+        "realized_pl": round(realized, 2),
+        "positions": positions,
+        "trades": [
+            {**t, "amount": round(t["shares"] * t["price"], 2)} for t in reversed(trades[-RECENT_TRADES:])
+        ],
+        "trade_count": len(trades),
+    }
+
+
+def place_trade(ticker: str, side: str, shares: int) -> dict:
+    """Buy or sell at the latest price. Refuses if the price is stale, cash is short, or shares are missing."""
+    if side not in ("buy", "sell"):
+        raise ValueError("side must be 'buy' or 'sell'")
+    if not 1 <= shares <= MAX_SHARES_PER_TRADE:
+        raise ValueError(f"Shares must be a whole number from 1 to {MAX_SHARES_PER_TRADE:,}.")
+
+    stats = get_stats(ticker)  # unknown ticker -> TickerNotFound (404)
+    if stats["stale"] or stats.get("price") is None:
+        raise SourceUnavailable("no fresh price")  # don't trade on an old price
+    price = stats["price"]
+
+    cash, _, holdings = _replay(cache.list_trades())
+    code = ticker.removesuffix(".BK")
+    if side == "buy" and shares * price > cash + 1e-6:
+        raise ValueError(
+            f"Not enough cash: {shares:,} {code} x {price:,.2f} = {shares * price:,.2f} THB, "
+            f"but you have {cash:,.2f} THB."
+        )
+    owned = holdings.get(ticker, {"shares": 0})["shares"]
+    if side == "sell" and shares > owned:
+        raise ValueError(f"You can't sell {shares:,} {code}: you own {owned:,}.")
+
+    trade = cache.add_trade(ticker, side, shares, price)
+    return {"trade": {**trade, "amount": round(shares * price, 2)}, "portfolio": get_portfolio()}
+
+
+def reset_portfolio() -> None:
+    cache.delete_all_trades()

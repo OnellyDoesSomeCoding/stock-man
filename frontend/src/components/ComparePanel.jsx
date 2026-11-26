@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { price } from '../format'
-import CompareChart from './CompareChart'
+import LineChart from './LineChart'
 
 const COLORS = { base: '#3b82f6', other: '#f59e0b' }
 const shortCode = (ticker) => ticker.replace(/\.BK$/, '')
@@ -62,7 +62,7 @@ export default function ComparePanel({ base, other, otherLoading, otherError, th
       </div>
 
       <div className={otherLoading ? 'chart-wrap loading' : 'chart-wrap'}>
-        <CompareChart series={series} theme={theme} onHover={setHoverTime} />
+        <LineChart series={series} theme={theme} onHover={setHoverTime} />
       </div>
     </>
   )

@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS watchlist (
     ticker   TEXT PRIMARY KEY,
     added_at TEXT NOT NULL         -- ISO timestamp, UTC
 );
+-- Paper-trading history (fake money). Cash and holdings are worked out by replaying these.
+CREATE TABLE IF NOT EXISTS trades (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker      TEXT NOT NULL,
+    side        TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+    shares      INTEGER NOT NULL CHECK (shares > 0),
+    price       REAL NOT NULL,     -- THB per share at the moment of the trade
+    executed_at TEXT NOT NULL      -- ISO timestamp, UTC
+);
 """
 
 
@@ -108,6 +117,29 @@ def add_to_watchlist(ticker: str) -> None:
 def remove_from_watchlist(ticker: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM watchlist WHERE ticker = ?", (ticker,))
+
+
+def list_trades() -> list[dict]:
+    """All paper trades, oldest first."""
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM trades ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_trade(ticker: str, side: str, shares: int, price: float) -> dict:
+    executed_at = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO trades (ticker, side, shares, price, executed_at) VALUES (?, ?, ?, ?, ?)",
+            (ticker, side, shares, price, executed_at),
+        )
+    return {"id": cur.lastrowid, "ticker": ticker, "side": side, "shares": shares,
+            "price": price, "executed_at": executed_at}
+
+
+def delete_all_trades() -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM trades")
 
 
 def last_price_date(ticker: str) -> str | None:

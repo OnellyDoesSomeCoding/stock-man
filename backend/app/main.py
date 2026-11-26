@@ -5,6 +5,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from . import cache, stocks
 
@@ -65,6 +66,26 @@ def prices(
     return _run(stocks.get_candles, ticker, range_, sma, rsi)
 
 
+@app.get("/api/stocks/{ticker}/backtest")
+def backtest(
+    ticker: str,
+    strategy: str = Query("price_above_ma50", description="price_above_ma50, ma20_above_ma50 or rsi_30_70"),
+    range_: Literal["6m", "1y", "5y"] = Query("5y", alias="range"),
+):
+    """Replay a trading rule with 100,000 fake THB and compare it with buy-and-hold."""
+    return _run(stocks.get_backtest, ticker, strategy, range_)
+
+
+@app.get("/api/stocks/{ticker}/forecast")
+def forecast(
+    ticker: str,
+    horizon: int = Query(5, description="Trading days ahead to predict: 1, 5 or 20"),
+    range_: Literal["6m", "1y", "5y"] = Query("1y", alias="range"),
+):
+    """Prediction experiment: simple models scored on past data against 'the price won't change'."""
+    return _run(stocks.get_forecast, ticker, horizon, range_)
+
+
 @app.get("/api/stocks/{ticker}/stats")
 def stats(ticker: str):
     """Price, % change, market cap and P/E for the stats card."""
@@ -88,3 +109,28 @@ def unwatch(ticker: str):
     """Remove a stock. Removing one that isn't there is fine (nothing happens)."""
     _run(stocks.remove_from_watchlist, ticker)
     return Response(status_code=204)
+
+
+class TradeRequest(BaseModel):
+    ticker: str
+    side: Literal["buy", "sell"]
+    shares: int = Field(ge=1, le=stocks.MAX_SHARES_PER_TRADE)
+
+
+@app.get("/api/portfolio")
+def portfolio():
+    """Paper portfolio: fake cash, holdings valued at current prices, profit/loss, recent trades."""
+    return stocks.get_portfolio()
+
+
+@app.post("/api/portfolio/trades", status_code=201)
+def trade(body: TradeRequest):
+    """Buy or sell at the latest price. Returns the trade and the updated portfolio."""
+    return _run(stocks.place_trade, body.ticker, body.side, body.shares)
+
+
+@app.post("/api/portfolio/reset")
+def reset_portfolio():
+    """Delete every paper trade: back to the starting cash."""
+    stocks.reset_portfolio()
+    return stocks.get_portfolio()

@@ -46,6 +46,75 @@ export const GLOSSARY = {
     title: 'Watchlist',
     text: "Your own list of stocks to keep an eye on, with each one's latest price and today's change. Click a row to open its chart. It is saved by the backend, so it stays after you close the browser.",
   },
+  paperTrading: {
+    title: 'Paper trading',
+    text: 'Practice buying and selling with fake money (you start with 100,000 THB). Trades use the real latest price, so you can learn how gains and losses work without risking anything.',
+  },
+  shares: {
+    title: 'Shares',
+    text: 'Small pieces of a company. Owning 100 shares of PTT means you own 100 tiny pieces; their total value moves with the share price.',
+  },
+  cash: { title: 'Cash', text: 'Fake money not spent on stocks yet. Buying uses cash; selling gives it back.' },
+  avgCost: {
+    title: 'Average cost',
+    text: 'The average price you paid per share. Buy 100 at 10 and 100 at 20 = average cost 15. Selling does not change it.',
+  },
+  marketValue: {
+    title: 'Value',
+    text: 'What your shares are worth right now: shares × current price.',
+  },
+  profitLoss: {
+    title: 'Profit / loss',
+    text: 'Value now minus what you paid. "Unrealized" (on paper) while you still own the shares: it can still change. It becomes "realized" (locked in) when you sell.',
+  },
+  totalValue: {
+    title: 'Total value',
+    text: 'Cash + the current value of all your shares. Compare it with the 100,000 THB you started with to see how you are doing.',
+  },
+  backtest: {
+    title: 'Backtest',
+    text: 'Testing a trading rule on past prices: "if I had followed this rule, what would have happened?" Good past results do not promise good future results.',
+  },
+  buyAndHold: {
+    title: 'Buy and hold',
+    text: 'The simplest plan: buy on the first day and never sell. Any clever rule should beat this, or it is not worth the effort and fees.',
+  },
+  maxDrawdown: {
+    title: 'Biggest drop',
+    text: 'The largest fall from a previous high, e.g. 100,000 down to 70,000 = 30%. Shows how painful the worst stretch would have felt.',
+  },
+  winRate: {
+    title: 'Win rate',
+    text: 'Of the completed buy-then-sell rounds, the share that made money. A low win rate can still profit if the wins are big, and vice versa.',
+  },
+  brokerFee: {
+    title: 'Broker fee',
+    text: 'A small charge on every buy and sell (here 0.15%, typical for Thai online brokers). Rules that trade often lose a lot to fees.',
+  },
+  timeInMarket: {
+    title: 'Time in market',
+    text: 'The share of days the rule owned the stock. The rest of the time the money sat in cash.',
+  },
+  prediction: {
+    title: 'Prediction experiment',
+    text: 'Simple models guess the price a few days ahead. Each is tested on past days it had not seen yet, then compared with the laziest guess: "the price will not change".',
+  },
+  avgMiss: {
+    title: 'Average miss',
+    text: 'On average, how far the guess was from the real price, in baht and in %. Smaller is better.',
+  },
+  vsNaive: {
+    title: 'vs "Tomorrow = today"',
+    text: 'How much bigger (+) or smaller (-) the average miss was than just guessing "no change". Below 0% would mean the model beat the lazy guess.',
+  },
+  direction: {
+    title: 'Direction right',
+    text: 'How often the model correctly guessed up or down (days with no change are skipped). Compare it with always guessing the more common direction, not with 50%.',
+  },
+  outlook: {
+    title: 'Typical range',
+    text: 'Not a prediction: it shows how far the price usually moved over this many days in the past, applied to today\'s price. 8 times out of 10 it stayed inside this range.',
+  },
   open: { title: 'Open', text: 'Price of the first trade that day.' },
   high: { title: 'High', text: 'Highest price anyone paid that day.' },
   low: { title: 'Low', text: 'Lowest price anyone paid that day.' },
