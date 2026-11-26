@@ -1,0 +1,211 @@
+"""Business logic: serve from the SQLite cache, refresh from Yahoo when stale."""
+
+import json
+import re
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
+
+from . import cache, yahoo
+
+PRICE_TTL = timedelta(minutes=30)  # how long cached data counts as "fresh"
+STATS_TTL = timedelta(minutes=30)
+SEARCH_TTL = timedelta(days=1)  # company names rarely change
+SEARCH_LIMIT = 10
+WATCHLIST_MAX = 30
+RANGE_DAYS = {"1m": 31, "3m": 92, "6m": 183, "1y": 366, "5y": 1827}
+SMA_MIN, SMA_MAX, SMA_MAX_COUNT = 2, 250, 3
+
+_TICKER_RE = re.compile(r"^[A-Z0-9&.\-]{1,15}$")
+
+
+class TickerNotFound(Exception):
+    pass
+
+
+class SourceUnavailable(Exception):
+    pass
+
+
+def normalize_ticker(raw: str) -> str:
+    """'ptt' -> 'PTT.BK'. Anything already containing a dot is kept as-is."""
+    ticker = raw.strip().upper()
+    if not _TICKER_RE.match(ticker):
+        raise ValueError(f"Invalid ticker: {raw!r}")
+    return ticker if "." in ticker else f"{ticker}.BK"
+
+
+def _is_fresh(fetched_at: datetime | None, ttl: timedelta) -> bool:
+    return fetched_at is not None and datetime.now(timezone.utc) - fetched_at < ttl
+
+
+def parse_sma_periods(raw: str | None) -> list[int]:
+    """'20,50,200' -> [20, 50, 200]."""
+    if not raw:
+        return []
+    try:
+        periods = sorted({int(p) for p in raw.split(",")})
+    except ValueError:
+        raise ValueError("sma must be numbers separated by commas, e.g. 20,50,200") from None
+    if len(periods) > SMA_MAX_COUNT or not all(SMA_MIN <= p <= SMA_MAX for p in periods):
+        raise ValueError(f"sma: up to {SMA_MAX_COUNT} periods, each {SMA_MIN}-{SMA_MAX} days")
+    return periods
+
+
+def simple_moving_average(candles: list[dict], period: int) -> list[dict]:
+    """Average close of the last `period` days, for every day that has enough history."""
+    points, total = [], 0.0
+    for i, candle in enumerate(candles):
+        total += candle["close"]
+        if i >= period:
+            total -= candles[i - period]["close"]  # drop the day that left the window
+        if i >= period - 1:
+            points.append({"time": candle["time"], "value": round(total / period, 2)})
+    return points
+
+
+def relative_strength_index(candles: list[dict], period: int = 14) -> list[dict]:
+    """
+    RSI (Wilder's method), 0-100: compares the size of recent up-days with recent down-days.
+    1. Average gain and average loss over the first `period` day-to-day changes.
+    2. After that, each day nudges both averages: new = (old * (period - 1) + today) / period.
+    3. RSI = 100 - 100 / (1 + avg_gain / avg_loss).
+    """
+    if len(candles) <= period:
+        return []
+
+    def rsi(avg_gain: float, avg_loss: float) -> float:
+        if avg_loss == 0:
+            return 100.0 if avg_gain > 0 else 50.0  # only up-days -> 100; flat -> neutral
+        return round(100 - 100 / (1 + avg_gain / avg_loss), 2)
+
+    changes = [candles[i]["close"] - candles[i - 1]["close"] for i in range(1, len(candles))]
+    avg_gain = sum(max(c, 0) for c in changes[:period]) / period
+    avg_loss = sum(max(-c, 0) for c in changes[:period]) / period
+    points = [{"time": candles[period]["time"], "value": rsi(avg_gain, avg_loss)}]
+
+    for i in range(period, len(changes)):
+        change = changes[i]
+        avg_gain = (avg_gain * (period - 1) + max(change, 0)) / period
+        avg_loss = (avg_loss * (period - 1) + max(-change, 0)) / period
+        points.append({"time": candles[i + 1]["time"], "value": rsi(avg_gain, avg_loss)})
+    return points
+
+
+def get_candles(
+    ticker: str, range_key: str, sma_raw: str | None = None, rsi_period: int | None = None
+) -> dict:
+    sma_periods = parse_sma_periods(sma_raw)
+    fetched_at, _ = cache.last_fetched(ticker, "prices")
+    stale = False
+
+    if not _is_fresh(fetched_at, PRICE_TTL):
+        last_date = cache.last_price_date(ticker)
+        try:
+            # Already have data? Only download from the last stored day onward.
+            candles = yahoo.fetch_history(ticker, start=last_date)
+        except Exception as exc:
+            if fetched_at is None:
+                raise SourceUnavailable(str(exc)) from exc
+            stale = True  # Yahoo is down: serve what we have
+        else:
+            if not candles and last_date is None:
+                raise TickerNotFound(ticker)
+            cache.upsert_prices(ticker, candles)
+            fetched_at = cache.mark_fetched(ticker, "prices")
+
+    # Indicators use ALL cached history (up to 5 years), so a 200-day line is complete
+    # even on a 1-month chart (and RSI has plenty of warm-up). Then everything is cut to the range.
+    since = (date.today() - timedelta(days=RANGE_DAYS[range_key])).isoformat()
+    history = cache.get_prices(ticker, since="0000-00-00")
+
+    def in_range(points: list[dict]) -> list[dict]:
+        return [p for p in points if p["time"] >= since]
+
+    return {
+        "ticker": ticker,
+        "range": range_key,
+        "updated_at": fetched_at.isoformat(),
+        "stale": stale,
+        "candles": in_range(history),
+        "sma": {str(p): in_range(simple_moving_average(history, p)) for p in sma_periods},
+        "rsi": in_range(relative_strength_index(history, rsi_period)) if rsi_period else [],
+    }
+
+
+def _rank(query: str, results: list[dict]) -> list[dict]:
+    """Exact code match first ('ptt' -> PTT.BK), then codes starting with it, then Yahoo's order."""
+    code = query.upper().replace(" ", "")
+
+    def score(item: dict) -> int:
+        base = item["ticker"].removesuffix(".BK")
+        return 0 if base == code else 1 if base.startswith(code) else 2
+
+    return sorted(results, key=score)  # sorted() is stable: ties keep Yahoo's order
+
+
+def search(raw_query: str) -> dict:
+    query = " ".join(raw_query.split()).lower()  # "  CP   All " -> "cp all"
+    if not 1 <= len(query) <= 50:
+        raise ValueError("Search text must be 1-50 characters.")
+
+    fetched_at, payload = cache.get_search(query)
+    if _is_fresh(fetched_at, SEARCH_TTL):
+        return {"query": query, "results": json.loads(payload)}
+
+    try:
+        results = _rank(query, yahoo.search(query))[:SEARCH_LIMIT]
+    except Exception as exc:
+        if payload is not None:
+            return {"query": query, "results": json.loads(payload)}  # old results beat none
+        raise SourceUnavailable(str(exc)) from exc
+
+    if results:  # don't remember "no results": it may be a temporary Yahoo glitch
+        cache.save_search(query, json.dumps(results))
+    return {"query": query, "results": results}
+
+
+def get_stats(ticker: str) -> dict:
+    fetched_at, payload = cache.last_fetched(ticker, "stats")
+    if _is_fresh(fetched_at, STATS_TTL):
+        return {**json.loads(payload), "updated_at": fetched_at.isoformat(), "stale": False}
+
+    try:
+        stats = yahoo.fetch_stats(ticker)
+    except Exception as exc:
+        if payload is None:
+            raise SourceUnavailable(str(exc)) from exc
+        return {**json.loads(payload), "updated_at": fetched_at.isoformat(), "stale": True}
+
+    if stats is None:
+        raise TickerNotFound(ticker)
+    stats = {"ticker": ticker, **stats}
+    fetched_at = cache.mark_fetched(ticker, "stats", json.dumps(stats))
+    return {**stats, "updated_at": fetched_at.isoformat(), "stale": False}
+
+
+def _watch_item(ticker: str) -> dict:
+    """Stats for one watchlist row. One broken stock shouldn't break the whole list."""
+    try:
+        return get_stats(ticker)
+    except (TickerNotFound, SourceUnavailable):
+        return {"ticker": ticker, "error": "Price unavailable right now"}
+
+
+def get_watchlist() -> list[dict]:
+    tickers = cache.watchlist_tickers()
+    # Fetch in parallel: 10 stocks with cold caches would otherwise take ~10x as long.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(_watch_item, tickers))
+
+
+def add_to_watchlist(ticker: str) -> dict:
+    current = cache.watchlist_tickers()
+    if ticker not in current and len(current) >= WATCHLIST_MAX:
+        raise ValueError(f"The watchlist is full ({WATCHLIST_MAX} stocks). Remove one first.")
+    stats = get_stats(ticker)  # raises TickerNotFound for made-up tickers -> nothing saved
+    cache.add_to_watchlist(ticker)
+    return stats
+
+
+def remove_from_watchlist(ticker: str) -> None:
+    cache.remove_from_watchlist(ticker)
