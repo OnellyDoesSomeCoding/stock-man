@@ -1,0 +1,23 @@
+# Stockman settings. Bump config_version whenever you change anything here,
+# so every saved result can be traced back to the settings that produced it.
+config_version: 1
+
+mt5:
+  # Gold symbol names to try, in order (brokers name gold differently).
+  # If none exist, the scripts search all symbols for gold priced in USD.
+  symbol_candidates: [XAUUSD, XAUUSDm, XAUUSD., XAUUSD.a, XAUUSD+, GOLD, GOLDm]
+
+  # How the broker's server clock relates to real (UTC) time:
+  #   auto          -> detect from the live price + past data (recommended)
+  #   ny7           -> New York time + 7h: UTC+2 in winter, UTC+3 in summer (most common)
+  #   fixed:+2      -> always UTC+2, no daylight saving
+  #   Europe/Athens -> any real time zone name
+  server_timezone: auto
+
+data:
+  dir: data
+  timeframes: [M1, M15, H4]
+  # Days asked for per request while walking back through history
+  chunk_days: {M1: 30, M15: 365, H4: 3650}
+  # Stop walking back after this many empty requests in a row
+  stop_after_empty_chunks: 3

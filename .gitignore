@@ -1,0 +1,10 @@
+# Secrets: never commit
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded market data (large, re-downloadable)
+data/
