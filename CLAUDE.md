@@ -70,7 +70,18 @@ Every decision (including skips) is logged with its reason.
 | 5 | AI scorer: probability a setup hits +2R before −1R; only kept if it beats plain rules out-of-sample after costs |
 | 6 | Real money only after every gate passes (decided by Jay and me, not you) |
 If Gate 2 (backtest) fails: that's a normal result. Try the next idea (London breakout, stop-hunt reversal, volatility squeeze) through the same gates.
-(Gate details and Phase 3b "JARVIS assistant" are in Jay's doc. Ask me if you need them.)
+(Phase 3b "JARVIS assistant" is in Jay's doc. Ask me if you need it.)
+
+## Roadmap gates (real money only after all four pass; a failed gate = fix one thing, re-test that phase)
+| Phase (rough weeks) | Gate to pass before moving on |
+|---|---|
+| 1 Setup and data (1–2): demo, MT5, repo, Discord webhook, save history, indicators | Gate 1: indicators match MT5 on 20 values; all times checked in Thailand time |
+| 2 Rules backtest (2–4): real costs, walk-forward, locked-data test | Gate 2: 200+ trades, avg ≥ +0.1R after costs, profit factor ≥ 1.3, still profitable at 2× costs, positive on the locked newest data |
+| 3 Alert bot (4–6): Discord signals, journal, watchdog; no orders | Gate 3: 2 weeks with no missed sessions; live signals match the backtester exactly |
+| 4 Demo auto-trading (6–14): ~2 months, 50+ trades | Gate 4: 50+ demo trades, avg R ≥ half the backtest's, no order bugs, drawdown inside the backtest's range |
+| 5 AI filter (8–14, parallel to 4) | Kept only if it beats the plain rules out-of-sample after costs |
+| 6 Small real money (month 4+) | 0.5% risk with min lot, weekly reviews; 1% only after 100 live trades inside the expected range |
+Note: the Gate 2 line doesn't repeat win rate > 38% and max drawdown < 15% from the pass/fail table above; confirm the exact numbers with Jay before any backtest.
 
 ## Testing honestly (non-negotiable)
 1. No future data: use finished candles only (a 4H candle counts only after it closes)

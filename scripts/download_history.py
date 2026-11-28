@@ -26,24 +26,34 @@ from stockman.history import (  # noqa: E402
 from stockman.mt5_client import (  # noqa: E402
     MT5Error, connect, find_gold_symbol, measure_server_offset, require_demo,
 )
-from stockman.server_time import detect_model, offset_minutes_at, weekly_opens  # noqa: E402
+from stockman.server_time import detect_periods, offset_minutes_at, weekly_opens  # noqa: E402
 
 
-def pick_timezone(cfg_value: str, raw: dict[str, pd.DataFrame], offset_minutes: int, now: datetime):
-    """Return (model, scores). Uses the finest timeframe with the most weekends."""
+def pick_clock_rules(cfg_value: str, raw: dict[str, pd.DataFrame], off, now: datetime):
+    """Return (periods, report): which clock rule the server used, period by period.
+
+    Uses the finest timeframe with the most weekends. A live-measured offset
+    narrows the newest period; an estimated one is ignored (holiday early
+    closes make it unreliable). A rule set in config.yaml is used for all history.
+    """
+    live = off.method == "live tick"
     series = [
         pd.to_datetime(df["time"].astype("int64"), unit="s")
         for tf, df in raw.items() if TF_MINUTES[tf] <= 60 and len(df)
     ]
     if not series:
-        raise MT5Error("Need M1 or M15 data to detect the server time zone.")
+        raise MT5Error("Need M1 or M15 data to detect the server clock rule.")
     best = max(series, key=lambda s: len(weekly_opens(s)))
-    model, scores = detect_model(best, offset_minutes, now)
+    periods, report = detect_periods(best, off.minutes if live else None, now)
     if cfg_value != "auto":
-        model = cfg_value
-        if offset_minutes_at(model, now) != offset_minutes:
-            print(f"  WARNING: config says {model}, which does not match today's offset.")
-    return model, scores
+        periods = [{"from": None, "model": cfg_value}]
+    newest = periods[-1]["model"]
+    if offset_minutes_at(newest, now) != off.minutes:
+        what = "WARNING: does not match" if live else "differs from"
+        print(f"  NOTE: {newest} = UTC{offset_minutes_at(newest, now) / 60:+g} now, which {what} "
+              f"the {off.method} offset {off.label}. "
+              + ("Check config.yaml." if live else "Trusting past data over the estimate."))
+    return periods, report
 
 
 def main() -> int:
@@ -78,19 +88,31 @@ def main() -> int:
                 print(f"       WARNING: hit MT5's 'Max bars in chart' limit ({term.maxbars:,}). "
                       "See instructions to raise it.")
 
-        # 2) Work out how the server clock maps to UTC.
-        model, scores = pick_timezone(cfg["mt5"]["server_timezone"], raw, off.minutes, now)
-        print("\nSERVER TIME ZONE  (weekly open should land on the same New York time every week)")
-        for s in scores:
-            share = "n/a" if s["share"] != s["share"] else f"{s['share']:.0%}"
-            mark = "  <- using" if s["model"] == model else ""
-            print(f"  {s['model']:<15} same NY open time in {share:>4} of {s['weeks']} weeks "
-                  f"(usual open {s['ny_open']} NY){mark}")
+        # 2) Work out how the server clock maps to UTC, period by period.
+        periods, report = pick_clock_rules(cfg["mt5"]["server_timezone"], raw, off, now)
+        print("\nSERVER CLOCK RULES  (gold reopens Sunday 18:00 New York; "
+              "the right rule puts it there every week)")
+        for r in report:
+            print(f"  {r['from']} -> {r['to']}  {r['model']:<14} {r['share']:>4.0%} of {r['weeks']:>4} weeks "
+                  f"at {r['ny_open']} NY   (next best: {r['runner_up']} {r['runner_up_share']:.0%} "
+                  f"at {r['runner_up_ny_open']} NY)")
+        for p in periods[1:]:
+            print(f"  Switch to {p['model']} from {p['from']} (server clock)")
+        if cfg["mt5"]["server_timezone"] != "auto":
+            print(f"  Using {periods[0]['model']} for all history (set in config.yaml)")
+
+        # Drop candles still forming (only finished candles may be used anywhere).
+        server_now = now.timestamp() + offset_minutes_at(periods[-1]["model"], now) * 60
+        for tf in raw:
+            forming = raw[tf]["time"] + TF_MINUTES[tf] * 60 > server_now
+            if forming.any():
+                raw[tf] = raw[tf][~forming].reset_index(drop=True)
+                print(f"  {tf}: left out {int(forming.sum())} candle(s) still forming")
 
         # 3) Convert, check, save.
         summary = {}
         for tf, r in raw.items():
-            df, dropped = to_utc_frame(r, model)
+            df, dropped = to_utc_frame(r, periods)
             print(f"\n{tf}: {len(df):,} bars, {df['time_utc'].iloc[0]:%Y-%m-%d %H:%M} -> "
                   f"{df['time_utc'].iloc[-1]:%Y-%m-%d %H:%M} UTC"
                   f"  (~{(df['time_utc'].iloc[-1] - df['time_utc'].iloc[0]).days / 365.25:.1f} years)")
@@ -130,8 +152,8 @@ def main() -> int:
             "broker_server": acc.server,
             "server_offset_now": off.label,
             "server_offset_method": off.method,
-            "server_timezone_model": model,
-            "timezone_scores": scores,
+            "server_clock_periods": periods,
+            "server_clock_report": report,
             "terminal_maxbars": term.maxbars,
             "timeframes": summary,
         }

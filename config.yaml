@@ -1,6 +1,6 @@
 # Stockman settings. Bump config_version whenever you change anything here,
 # so every saved result can be traced back to the settings that produced it.
-config_version: 1
+config_version: 2
 
 mt5:
   # Gold symbol names to try, in order (brokers name gold differently).
@@ -21,3 +21,8 @@ data:
   chunk_days: {M1: 30, M15: 365, H4: 3650}
   # Stop walking back after this many empty requests in a row
   stop_after_empty_chunks: 3
+
+spread:
+  # "Normal" spread per hour = median over this many days before each moment
+  # (spreads change a lot over the years, so only recent data counts)
+  lookback_days: 90

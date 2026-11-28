@@ -9,7 +9,7 @@ import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
 
-from .server_time import NY_NAME, to_utc
+from .server_time import NY_NAME, to_utc_periods
 
 TIMEFRAMES = {"M1": mt5.TIMEFRAME_M1, "M15": mt5.TIMEFRAME_M15, "H4": mt5.TIMEFRAME_H4}
 TF_MINUTES = {"M1": 1, "M15": 15, "H4": 240}
@@ -26,21 +26,25 @@ def fetch_raw(symbol: str, tf_name: str, chunk_days: int, stop_after_empty: int,
     floor = datetime(1990, 1, 1, tzinfo=timezone.utc)
     step = timedelta(days=chunk_days)
     frames, empty_run, total = [], 0, 0
+    oldest = None  # oldest bar time received so far
 
     while end > floor:
         start = end - step
         rates = None
-        for attempt in range(3):  # MT5 may need a moment to pull history from the server
+        for _ in range(3):  # MT5 may need a moment to pull history from the server
             rates = mt5.copy_rates_range(symbol, tf, start, end)
             if rates is not None and len(rates):
                 break
             time.sleep(1.0)
-        if rates is None or not len(rates):
+        # Past the start of history MT5 keeps returning the same oldest bar,
+        # so a chunk only counts if it reaches further back than before.
+        if rates is None or not len(rates) or (oldest is not None and rates["time"].min() >= oldest):
             empty_run += 1
             if empty_run >= stop_after_empty:
                 break
         else:
             empty_run = 0
+            oldest = int(rates["time"].min())
             frames.append(pd.DataFrame(rates)[RAW_COLS])
             total += len(rates)
             log(f"    {tf_name}: back to {start:%Y-%m-%d}, {total:,} bars so far", end="\r")
@@ -72,10 +76,10 @@ def merge_with_saved(new_raw: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, i
     return merged, only_old
 
 
-def to_utc_frame(raw: pd.DataFrame, model: str) -> tuple[pd.DataFrame, int]:
+def to_utc_frame(raw: pd.DataFrame, periods: list[dict]) -> tuple[pd.DataFrame, int]:
     """Raw MT5 bars -> frame with time_utc first. Returns (frame, bars dropped)."""
-    server = pd.to_datetime(raw["time"].astype("int64"), unit="s")
-    out = pd.DataFrame({"time_utc": to_utc(server, model).reset_index(drop=True)})
+    server = pd.to_datetime(raw["time"].astype("int64"), unit="s").reset_index(drop=True)
+    out = pd.DataFrame({"time_utc": to_utc_periods(server, periods)})
     for c in RAW_COLS[1:]:
         out[c] = raw[c].values
     out["time_server_raw"] = raw["time"].astype("int64").values

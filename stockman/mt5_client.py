@@ -133,7 +133,8 @@ def _estimate_from_close(tick) -> ServerOffset:
     minutes = best[0] * 60
     note = (
         f"No new price for 10 s, so the market looks closed. Offset ESTIMATED from the last "
-        f"price. Re-run Mon-Fri while gold is trading to measure it for real."
+        f"price, which is wrong after holiday early closes (e.g. the day after US Thanksgiving). "
+        f"Re-run Mon-Fri while gold is trading to measure it for real."
     )
     last_utc = (last - timedelta(minutes=minutes)).replace(tzinfo=timezone.utc)
     if last_utc.astimezone(NY).weekday() != 4:
